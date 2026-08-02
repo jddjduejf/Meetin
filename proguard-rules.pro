@@ -1,0 +1,9 @@
+-keep public class * extends android.app.Activity
+-keep public class * extends android.app.Service
+-keep public class * extends android.content.BroadcastReceiver
+-keep class com.meetin.chat.** { *; }
+-dontwarn
+-optimizationpasses 5
+-repackageclasses ''
+-allowaccessmodification
+-useuniqueclassmembernames
