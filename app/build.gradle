@@ -28,13 +28,30 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
+
+    // FIX: Handle duplicate Netty files
+    packagingOptions {
+        exclude 'META-INF/INDEX.LIST'
+        exclude 'META-INF/DEPENDENCIES'
+        exclude 'META-INF/LICENSE'
+        exclude 'META-INF/NOTICE'
+    }
 }
 
 dependencies {
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'androidx.core:core:1.12.0'
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
-    
-    // Netty for SOCKS5 handling
+
+    // Netty for SOCKS5 - use specific version to avoid conflicts
     implementation 'io.netty:netty-handler:4.1.100.Final'
+    implementation 'io.netty:netty-transport:4.1.100.Final'
+    implementation 'io.netty:netty-buffer:4.1.100.Final'
+    implementation 'io.netty:netty-common:4.1.100.Final'
+}
+
+// FIX: Exclude duplicate Kotlin stdlib
+configurations.all {
+    exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk7'
+    exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk8'
 }
