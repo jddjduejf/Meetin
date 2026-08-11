@@ -34,7 +34,8 @@ dependencies {
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'androidx.core:core:1.12.0'
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
-
-    // Yamux for multiplexing proxy traffic over C2 tunnel
-    implementation 'com.github.hashicorp:yamux:0.1.0'
+    
+    // Juice (libjuice) for ICE/STUN NAT traversal
+    // Note: libjuice is a C library, we need to build and include the JNI bindings
+    // For now, we'll implement the ICE logic in Java
 }

