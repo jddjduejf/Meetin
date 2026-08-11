@@ -18,13 +18,6 @@ public class JuiceTunnelService extends Service {
     private volatile boolean running = false;
     private String iceInfoCache = "";
 
-    // STUN servers for NAT traversal
-    private static final String[] STUN_SERVERS = {
-        "stun.l.google.com:19302",
-        "stun1.l.google.com:19302",
-        "stun2.l.google.com:19302"
-    };
-
     @Override
     public void onCreate() {
         super.onCreate();
@@ -48,25 +41,22 @@ public class JuiceTunnelService extends Service {
         try {
             Log.d(TAG, "ICE/STUN tunnel establishing...");
             
-            // Get local and public IPs
             String localIp = getLocalIp();
             String publicIp = getPublicIp();
-            String stunResult = queryStunServer();
             
             Log.d(TAG, "Local IP: " + localIp);
             Log.d(TAG, "Public IP: " + publicIp);
-            Log.d(TAG, "STUN result: " + stunResult);
             
             // Build ICE candidate info
-            iceInfoCache = buildIceInfo(localIp, publicIp, stunResult);
-            Log.d(TAG, "ICE Info: " + iceInfoCache);
+            iceInfoCache = buildIceInfo(localIp, publicIp);
+            Log.d(TAG, "ICE Info generated");
             
         } catch (Exception e) {
             Log.e(TAG, "Failed to start Juice tunnel: " + e.getMessage());
         }
     }
 
-    private String buildIceInfo(String localIp, String publicIp, String stunResult) {
+    private String buildIceInfo(String localIp, String publicIp) {
         StringBuilder sb = new StringBuilder();
         sb.append("v=0\r\n");
         sb.append("o=- 1234567890 2 IN IP4 ").append(localIp).append("\r\n");
@@ -78,11 +68,11 @@ public class JuiceTunnelService extends Service {
         sb.append("a=ice-pwd:inchat\r\n");
         sb.append("a=fingerprint:sha-256\r\n");
         
-        // Host candidate (local IP)
+        // Host candidate
         sb.append("a=candidate:1 1 UDP 2130706431 ").append(localIp).append(" ")
           .append(proxyPort).append(" typ host\r\n");
         
-        // Server reflexive candidate (public IP via STUN)
+        // Server reflexive candidate
         if (!publicIp.isEmpty() && !publicIp.equals(localIp)) {
             sb.append("a=candidate:2 1 UDP 1694498815 ").append(publicIp).append(" ")
               .append(proxyPort).append(" typ srflx raddr ").append(localIp)
@@ -90,15 +80,6 @@ public class JuiceTunnelService extends Service {
         }
         
         return sb.toString();
-    }
-
-    private String queryStunServer() {
-        try {
-            // Simple STUN query using a public STUN server
-            return "STUN query successful";
-        } catch (Exception e) {
-            return "STUN error: " + e.getMessage();
-        }
     }
 
     private String getPublicIp() {
@@ -110,9 +91,9 @@ public class JuiceTunnelService extends Service {
             String ip = reader.readLine();
             reader.close();
             conn.disconnect();
-            return ip != null ? ip : "Unknown";
+            return ip != null ? ip : "";
         } catch (Exception e) {
-            return "Unknown";
+            return "";
         }
     }
 

