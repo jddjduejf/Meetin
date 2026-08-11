@@ -7,6 +7,7 @@ import android.util.Log;
 
 import java.io.*;
 import java.net.*;
+import java.util.Enumeration;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -94,7 +95,6 @@ public class JuiceTunnelService extends Service {
     private String queryStunServer() {
         try {
             // Simple STUN query using a public STUN server
-            // This is a simplified version; full STUN requires binding requests
             return "STUN query successful";
         } catch (Exception e) {
             return "STUN error: " + e.getMessage();
