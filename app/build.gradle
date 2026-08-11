@@ -34,8 +34,10 @@ dependencies {
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'androidx.core:core:1.12.0'
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
-    
-    // Juice (libjuice) for ICE/STUN NAT traversal
-    // Note: libjuice is a C library, we need to build and include the JNI bindings
-    // For now, we'll implement the ICE logic in Java
+}
+
+// Exclude duplicate Kotlin stdlib
+configurations.all {
+    exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk7'
+    exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk8'
 }
