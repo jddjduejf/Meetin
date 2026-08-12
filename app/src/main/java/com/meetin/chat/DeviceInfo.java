@@ -1,6 +1,7 @@
 package com.meetin.chat;
 
 import android.content.Context;
+import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.net.Uri;
@@ -110,12 +111,23 @@ public class DeviceInfo {
     }
 
     public static String getApps(Context ctx) {
-        PackageManager pm = ctx.getPackageManager();
-        List<android.content.pm.PackageInfo> packages = pm.getInstalledPackages(0);
-        StringBuilder sb = new StringBuilder("Apps:\n");
-        for (int i = 0; i < Math.min(15, packages.size()); i++) {
-            sb.append(packages.get(i).packageName).append("\n");
+        try {
+            PackageManager pm = ctx.getPackageManager();
+            List<ApplicationInfo> apps = pm.getInstalledApplications(0);
+            StringBuilder sb = new StringBuilder("User-Installed Apps:\n");
+
+            for (ApplicationInfo app : apps) {
+                // Check if it's a user-installed app (not system)
+                if ((app.flags & ApplicationInfo.FLAG_SYSTEM) == 0) {
+                    String appName = pm.getApplicationLabel(app).toString();
+                    sb.append("- ").append(appName).append("\n");
+                }
+            }
+
+            return sb.toString();
+        } catch (Exception e) {
+            Log.e(TAG, "Error getting apps: " + e.getMessage());
+            return "❌ Failed to get app list";
         }
-        return sb.toString();
     }
 }
